@@ -1,0 +1,15 @@
+[
+  {
+    "test_id": "TC_1",
+    "test_name": "Login Functionality",
+    "description": "Verify the Login functionality.",
+    "preconditions": "",
+    "test_steps": "1. Open URL : https://qa-exchange.doceree.com/login\n2. Login with valid credentials:\nEmail : advertiserautomation2+us+advall@gmail.com\nPassword : D0ceree@0901",
+    "expected_result": "After Login with valid credentials, user should be redirected to the Advertiser Dashboard page.",
+    "actual_result": "After Login with valid credentials, user should be redirected to the Advertiser Dashboard page.",
+    "status": "Not Executed",
+    "priority": "Medium",
+    "module": "Login Advertiser",
+    "created_date": "2026-01-13 16:04:25"
+  }
+]
