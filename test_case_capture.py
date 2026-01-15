@@ -1167,8 +1167,9 @@ class TestCaseCapture:
         button_frame = ttk.Frame(url_info_frame)
         button_frame.pack(side=tk.RIGHT, padx=5)
         
-        ttk.Button(button_frame, text="Detect URL from Browser", 
-                  command=self.detect_url_from_browser, width=22).pack(pady=2, padx=2, fill=tk.X)
+        self.detect_url_button = ttk.Button(button_frame, text="Detect URL from Browser", 
+                  command=self.detect_url_from_browser, width=22)
+        self.detect_url_button.pack(pady=2, padx=2, fill=tk.X)
         ttk.Button(button_frame, text="Paste URL Manually", 
                   command=self._paste_url_from_clipboard, width=22).pack(pady=2, padx=2, fill=tk.X)
         ttk.Button(button_frame, text="Clear URL", 
@@ -1392,21 +1393,8 @@ class TestCaseCapture:
             self.status_label.config(text="Browser monitoring started! You can open browser manually and use 'Detect URL from Browser' button.")
             self.log_message("Ready to detect URLs. Open browser and navigate to target application", "INFO")
             
-            # Try to auto-detect URL after monitoring starts
-            self.root.after(2000, self._try_auto_detect_url_after_monitoring_start)
-            messagebox.showinfo("Browser Monitoring Started", 
-                              "Browser URL monitoring is now active!\n\n"
-                              "📋 Workflow for Manual Browser:\n"
-                              "1. Open your browser manually (Chrome/Edge/Firefox)\n"
-                              "2. Navigate to your target application URL\n"
-                              "3. Click 'Detect URL from Browser' button in the Capture tab\n"
-                              "   OR use the 'Manual Override' section to enter URL\n"
-                              "4. Click 'Start Auto-Capture' to begin capturing actions\n\n"
-                              "💡 Alternative (Auto-Detection):\n"
-                              "If you want automatic URL detection, start browser with:\n"
-                              "--remote-debugging-port=9222\n"
-                              "(Use the helper .bat files for this)\n\n"
-                              "The tool will work with either method!")
+            # Try to auto-detect URL after monitoring starts (non-blocking)
+            self.root.after(1000, self._try_auto_detect_url_after_monitoring_start)
             self.notebook.select(1)  # Switch to capture tab
         else:
             self.log_message("Failed to start browser monitoring", "ERROR")
@@ -1539,31 +1527,113 @@ class TestCaseCapture:
             self.url_status_label.config(text="⚠ URL not detected. Use 'Detect URL from Browser' or Manual Override", foreground="orange")
     
     def detect_url_from_browser(self):
-        """Detect URL from browser - shows browser and mode selection first"""
-        # Step 1: Show browser selection dialog
-        browser = self._show_browser_selection_dialog_for_detection()
-        if not browser:
-            # User cancelled browser selection
+        """Detect URL from any open browser window - runs in background thread for fast response"""
+        # Disable button and show loader
+        if hasattr(self, 'detect_url_button'):
+            self.detect_url_button.config(state='disabled', text='⏳ Detecting...')
+        
+        # Show loading indicator
+        self._show_loading_indicator()
+        self.log_message("Detecting URL from browser...", "INFO")
+        
+        # Run detection in background thread to avoid blocking UI
+        def detect_in_thread():
+            try:
+                url = None
+                
+                # Method 1: Try window title detection first (fastest - ~0.01s)
+                self.root.after(0, lambda: self.log_message("Method 1: Trying window title detection...", "INFO"))
+                url = self._get_url_from_window_title_simple()
+                if url:
+                    self.root.after(0, lambda: self.log_message(f"✅ URL found via window title: {url}", "SUCCESS"))
+                else:
+                    # Method 2: Try Chrome DevTools Protocol (works for Chrome and Edge - ~0.3s per port)
+                    self.root.after(0, lambda: self.log_message("Method 2: Trying Chrome DevTools Protocol...", "INFO"))
+                    url = self._get_url_from_chrome_devtools_simple()
+                    if url:
+                        self.root.after(0, lambda: self.log_message(f"✅ URL found via DevTools: {url}", "SUCCESS"))
+                    else:
+                        # Method 3: Try keyboard automation (slowest, use as last resort - ~2s)
+                        self.root.after(0, lambda: self.log_message("Method 3: Trying keyboard automation...", "INFO"))
+                        url = self._try_get_url_via_keyboard()
+                        if url:
+                            self.root.after(0, lambda: self.log_message(f"✅ URL found via keyboard: {url}", "SUCCESS"))
+                
+                # Update UI in main thread
+                self.root.after(0, lambda: self._handle_detection_result(url))
+            except Exception as e:
+                self.root.after(0, lambda: self._handle_detection_error(str(e)))
+        
+        # Start detection thread
+        thread = threading.Thread(target=detect_in_thread, daemon=True)
+        thread.start()
+    
+    def _show_loading_indicator(self):
+        """Show animated loading indicator"""
+        # Stop any existing animation
+        if hasattr(self, 'loading_animation_id'):
+            self.root.after_cancel(self.loading_animation_id)
+            self.loading_animation_id = None
+        
+        if not hasattr(self, 'loading_label'):
+            # Create loading label if it doesn't exist
+            if hasattr(self, 'url_status_label'):
+                # Place it near the status label
+                self.loading_label = ttk.Label(self.url_status_label.master, 
+                                              text="⏳ Detecting URL...", 
+                                              font=("Arial", 9, "bold"),
+                                              foreground="blue")
+                self.loading_label.pack(anchor=tk.W, pady=(2, 0))
+            else:
+                return
+        
+        # Show the label
+        self.loading_label.pack(anchor=tk.W, pady=(2, 0))
+        
+        # Update loading text with animation
+        self.loading_dots = 0
+        self.loading_active = True
+        self._animate_loading()
+    
+    def _animate_loading(self):
+        """Animate loading indicator"""
+        if not hasattr(self, 'loading_active') or not self.loading_active:
             return
         
-        # Step 2: Show mode selection dialog based on selected browser
-        mode = self._show_mode_selection_dialog_for_detection(browser)
-        if not mode:
-            # User cancelled mode selection
-            return
+        if hasattr(self, 'loading_label') and self.loading_label.winfo_exists():
+            dots = "." * (self.loading_dots % 4)
+            self.loading_label.config(text=f"⏳ Detecting URL{dots}")
+            self.loading_dots += 1
+            # Continue animation until detection completes
+            self.loading_animation_id = self.root.after(300, self._animate_loading)
+    
+    def _hide_loading_indicator(self):
+        """Hide loading indicator"""
+        # Stop animation
+        self.loading_active = False
+        if hasattr(self, 'loading_animation_id'):
+            self.root.after_cancel(self.loading_animation_id)
+            self.loading_animation_id = None
         
-        # Step 3: Detect URL from the selected browser and mode
-        self.log_message("=" * 60, "INFO")
-        self.log_message(f"Selected browser: {browser}, Selected mode: {mode}", "INFO")
-        self.log_message(f"Detecting URL from {browser} ({mode} mode)...", "INFO")
-        url = self._detect_url_from_specific_browser(browser, mode)
+        # Hide the label
+        if hasattr(self, 'loading_label') and self.loading_label.winfo_exists():
+            self.loading_label.pack_forget()
+    
+    def _handle_detection_result(self, url):
+        """Handle detection result in main thread"""
+        # Hide loading indicator
+        self._hide_loading_indicator()
+        
+        # Re-enable button
+        if hasattr(self, 'detect_url_button'):
+            self.detect_url_button.config(state='normal', text='Detect URL from Browser')
         
         if url:
             self.log_message(f"✅ URL detected: {url}", "SUCCESS")
             # Check if it's different from current URL
             if url != self.current_url:
-                # URL changed - ask user what to do (keep existing confirmation logic)
-                self._handle_url_change_with_confirmation(url)
+                # URL changed - ask user what to do
+                self._handle_url_change_with_confirmation(url, None, None)
             else:
                 # Same URL - just confirm
                 self.log_message(f"✅ Current URL confirmed: {url}", "SUCCESS")
@@ -1574,266 +1644,93 @@ class TestCaseCapture:
                                   f"This URL is already set in the tool.")
         else:
             # Could not detect URL
-            self.log_message("=" * 60, "INFO")
-            self.log_message("❌ Could not detect URL from selected browser", "WARNING")
-            self.log_message("=" * 60, "INFO")
+            self.log_message("❌ Could not detect URL from browser", "WARNING")
             self._show_detection_failed_dialog()
     
-    def _show_browser_selection_dialog_for_detection(self):
-        """Show browser selection dialog for URL detection (only Chrome, Firefox, Edge)"""
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Select Browser")
-        dialog.geometry("450x350")
-        dialog.resizable(False, False)
-        dialog.transient(self.root)
-        dialog.grab_set()
+    def _handle_detection_error(self, error_msg):
+        """Handle detection error in main thread"""
+        # Hide loading indicator
+        self._hide_loading_indicator()
         
-        # Center the dialog
-        dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() // 2) - (450 // 2)
-        y = (dialog.winfo_screenheight() // 2) - (350 // 2)
-        dialog.geometry(f"450x350+{x}+{y}")
-        
-        # Main message
-        message_frame = ttk.Frame(dialog, padding="20")
-        message_frame.pack(fill=tk.BOTH, expand=True)
-        
-        ttk.Label(message_frame, 
-                 text="Select Browser",
-                 font=("Arial", 12, "bold")).pack(pady=(0, 10))
-        
-        ttk.Label(message_frame, 
-                 text="From which browser do you want to detect URL?",
-                 font=("Arial", 9)).pack(pady=(0, 20))
-        
-        # Browser buttons frame
-        browsers_frame = ttk.Frame(message_frame)
-        browsers_frame.pack(pady=10, fill=tk.BOTH, expand=True)
-        
-        selected_browser = [None]  # Use list to allow modification in nested function
-        
-        # Only show the three main browsers
-        browsers = [
-            ("Google Chrome", "chrome"),
-            ("Mozilla Firefox", "firefox"),
-            ("Microsoft Edge", "edge")
-        ]
-        
-        for browser_name, browser_id in browsers:
-            btn = ttk.Button(browsers_frame, 
-                            text=browser_name,
-                            command=lambda b=browser_id: self._select_browser_for_detection(dialog, b, selected_browser),
-                            width=35)
-            btn.pack(pady=8, padx=20, fill=tk.X)
-        
-        # Cancel button
-        ttk.Button(message_frame, 
-                  text="Cancel",
-                  command=dialog.destroy).pack(pady=(15, 0))
-        
-        dialog.wait_window()
-        return selected_browser[0]
+        # Re-enable button
+        if hasattr(self, 'detect_url_button'):
+            self.detect_url_button.config(state='normal', text='Detect URL from Browser')
+        self.log_message(f"❌ Error during URL detection: {error_msg}", "ERROR")
+        self._show_detection_failed_dialog()
     
-    def _select_browser_for_detection(self, dialog, browser_id, selected_browser):
-        """Handle browser selection for detection"""
-        selected_browser[0] = browser_id
-        dialog.destroy()
-    
-    def _show_mode_selection_dialog_for_detection(self, browser):
-        """Show mode selection dialog for URL detection"""
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Select Mode")
-        dialog.geometry("400x250")
-        dialog.resizable(False, False)
-        dialog.transient(self.root)
-        dialog.grab_set()
-        
-        # Center the dialog
-        dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() // 2) - (400 // 2)
-        y = (dialog.winfo_screenheight() // 2) - (250 // 2)
-        dialog.geometry(f"400x250+{x}+{y}")
-        
-        # Main message
-        message_frame = ttk.Frame(dialog, padding="20")
-        message_frame.pack(fill=tk.BOTH, expand=True)
-        
-        browser_names = {
-            "chrome": "Google Chrome",
-            "edge": "Microsoft Edge",
-            "firefox": "Mozilla Firefox"
-        }
-        
-        browser_name = browser_names.get(browser, browser.capitalize())
-        
-        ttk.Label(message_frame, 
-                 text=f"Select mode for {browser_name}:",
-                 font=("Arial", 11, "bold")).pack(pady=(0, 20))
-        
-        # Mode buttons frame
-        modes_frame = ttk.Frame(message_frame)
-        modes_frame.pack(pady=10, fill=tk.BOTH, expand=True)
-        
-        selected_mode = [None]
-        
-        # Normal mode button - ensure it's clearly labeled and uses "normal" mode
-        btn_normal = ttk.Button(modes_frame, 
-                               text="Normal Mode",
-                               command=lambda m="normal": self._select_mode_for_detection(dialog, m, selected_mode),
-                               width=30)
-        btn_normal.pack(pady=10, padx=20, fill=tk.X)
-        
-        # Incognito/Private mode button - different text based on browser
-        # Ensure it's clearly labeled and uses "incognito" mode
-        if browser == "chrome":
-            mode_text = "Incognito Mode"
-        else:  # firefox or edge
-            mode_text = "New Private Window"
-        
-        btn_private = ttk.Button(modes_frame, 
-                               text=mode_text,
-                               command=lambda m="incognito": self._select_mode_for_detection(dialog, m, selected_mode),
-                               width=30)
-        btn_private.pack(pady=10, padx=20, fill=tk.X)
-        
-        # Cancel button
-        ttk.Button(message_frame, 
-                  text="Cancel",
-                  command=dialog.destroy).pack(pady=(15, 0))
-        
-        dialog.wait_window()
-        return selected_mode[0]
-    
-    def _select_mode_for_detection(self, dialog, mode, selected_mode):
-        """Handle mode selection for detection"""
-        self.log_message(f"Mode selected: {mode}", "INFO")
-        selected_mode[0] = mode
-        dialog.destroy()
-    
-    def _detect_url_from_specific_browser(self, browser, mode):
-        """Detect URL from a specific browser and mode"""
-        # Method 1: Try Chrome DevTools Protocol (works for Chrome and Edge)
-        # This is the most reliable method - accept any URL it finds
-        if browser in ["chrome", "edge"]:
-            self.log_message(f"Method 1: Trying Chrome DevTools Protocol for {browser}...", "INFO")
-            url = self.browser_monitor._get_url_from_chrome_devtools()
-            if url:
-                self.log_message(f"✅ URL found via DevTools: {url}", "SUCCESS")
-                return url
-        
-        # Method 2: Try to activate the browser window first, then use keyboard automation
-        # This works for all browsers if we can activate the correct window
-        self.log_message(f"Method 2: Trying to activate {browser} ({mode} mode) window...", "INFO")
-        window_activated = self._activate_browser_window(browser, mode)
-        if window_activated:
-            self.log_message(f"Method 2a: Trying keyboard automation...", "INFO")
-            url = self._try_get_url_via_keyboard()
-            if url:
-                self.log_message(f"✅ URL found via keyboard automation: {url}", "SUCCESS")
-                return url
-        
-        # Method 3: Try window title detection (works for all browsers)
-        self.log_message(f"Method 3: Trying window title detection for {browser} ({mode} mode)...", "INFO")
-        url = self._get_url_from_browser_window_title(browser, mode)
-        if url:
-            self.log_message(f"✅ URL found via window title: {url}", "SUCCESS")
-            return url
-        
-        # Method 4: Try keyboard automation on current foreground window (fallback)
-        # Even if we couldn't activate the specific window, try with whatever is focused
-        self.log_message(f"Method 4: Trying keyboard automation on current window (fallback)...", "INFO")
-        url = self._try_get_url_via_keyboard()
-        if url:
-            self.log_message(f"✅ URL found via keyboard automation (fallback): {url}", "SUCCESS")
-            return url
-        
+    def _get_url_from_chrome_devtools_simple(self):
+        """Simple Chrome DevTools URL detection without browser/mode restrictions - optimized for speed"""
+        try:
+            import json as json_lib
+            import urllib.request
+            import urllib.error
+            import win32gui
+            
+            # Get the active window title
+            active_hwnd = win32gui.GetForegroundWindow()
+            active_window_title = win32gui.GetWindowText(active_hwnd)
+            
+            # Try multiple common ports with reduced timeout for faster response
+            ports = [9222, 9223, 9224, 9225, 9226]
+            for port in ports:
+                try:
+                    # Reduced timeout to 0.2s for even faster response
+                    response = urllib.request.urlopen(f"http://localhost:{port}/json", timeout=0.2)
+                    tabs = json_lib.loads(response.read().decode())
+                    
+                    if not tabs:
+                        continue
+                    
+                    # Try to find the active tab first (tab with webSocketDebuggerUrl is usually the active one)
+                    for tab in tabs:
+                        if 'webSocketDebuggerUrl' in tab and tab['webSocketDebuggerUrl']:
+                            url = tab.get('url', '')
+                            if url and (url.startswith('http://') or url.startswith('https://')):
+                                return url
+                    
+                    # If no active tab found, try to match by window title
+                    if active_window_title:
+                        for tab in tabs:
+                            tab_title = tab.get('title', '')
+                            url = tab.get('url', '')
+                            if url and (url.startswith('http://') or url.startswith('https://')):
+                                if tab_title:
+                                    tab_title_lower = tab_title.lower()
+                                    active_title_lower = active_window_title.lower()
+                                    if tab_title_lower in active_title_lower or active_title_lower in tab_title_lower:
+                                        return url
+                    
+                    # If still no match, return the first valid URL (quick fallback)
+                    for tab in tabs:
+                        url = tab.get('url', '')
+                        if url and (url.startswith('http://') or url.startswith('https://')):
+                            return url
+                except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+                    # Skip this port and try next one
+                    continue
+                except:
+                    continue
+        except:
+            pass
         return None
     
-    def _verify_browser_and_mode(self, browser, mode):
-        """Verify that the detected URL is from the specified browser and mode"""
-        if sys.platform == "win32":
-            try:
-                import win32gui
-                hwnd = win32gui.GetForegroundWindow()
-                window_title = win32gui.GetWindowText(hwnd).lower()
-                
-                browser_keywords = {
-                    "chrome": ["chrome", "google chrome"],
-                    "edge": ["edge", "microsoft edge"],
-                    "firefox": ["firefox", "mozilla firefox"]
-                }
-                
-                mode_keywords = {
-                    "normal": [],
-                    "incognito": ["incognito", "private"]
-                }
-                
-                # Check if window title contains browser keyword
-                browser_match = any(keyword in window_title for keyword in browser_keywords.get(browser, []))
-                
-                # Check mode (incognito/private windows usually have "incognito" or "private" in title)
-                if mode == "incognito":
-                    mode_match = any(keyword in window_title for keyword in mode_keywords["incognito"])
-                else:
-                    # For normal mode, check that it doesn't have incognito/private keywords
-                    mode_match = not any(keyword in window_title for keyword in mode_keywords["incognito"])
-                
-                return browser_match and mode_match
-            except:
-                pass
-        return True  # If we can't verify, assume it's correct
-    
-    def _get_url_from_browser_window_title(self, browser, mode):
-        """Get URL from window title of specific browser and mode"""
-        if sys.platform == "win32":
-            try:
+    def _get_url_from_window_title_simple(self):
+        """Simple window title URL detection without browser/mode restrictions"""
+        try:
+            if sys.platform == "win32":
                 import win32gui
                 import re
                 
-                browser_keywords = {
-                    "chrome": ["chrome", "google chrome"],
-                    "edge": ["edge", "microsoft edge"],
-                    "firefox": ["firefox", "mozilla firefox"]
-                }
+                # Get foreground window
+                hwnd = win32gui.GetForegroundWindow()
+                window_title = win32gui.GetWindowText(hwnd)
                 
-                mode_keywords = {
-                    "normal": [],
-                    "incognito": ["incognito", "private"]
-                }
-                
-                # Get all visible windows
-                windows = []
-                def enum_windows_callback(hwnd, param):
-                    try:
-                        if win32gui.IsWindowVisible(hwnd):
-                            window_title = win32gui.GetWindowText(hwnd)
-                            if window_title:
-                                param.append((hwnd, window_title))
-                    except:
-                        pass
-                    return True
-                
-                win32gui.EnumWindows(enum_windows_callback, windows)
-                
-                url_pattern = r'https?://[^\s<>"\'\)]+'
-                
-                # Strategy 1: Look for exact match (browser + mode)
-                for hwnd, window_title in windows:
-                    title_lower = window_title.lower()
-                    
-                    # Check if it matches the browser
-                    browser_match = any(keyword in title_lower for keyword in browser_keywords.get(browser, []))
-                    if not browser_match:
-                        continue
-                    
-                    # Check if it matches the mode
-                    if mode == "incognito":
-                        mode_match = any(keyword in title_lower for keyword in mode_keywords["incognito"])
-                    else:
-                        mode_match = not any(keyword in title_lower for keyword in mode_keywords["incognito"])
-                    
-                    if mode_match:
+                if window_title:
+                    # Check if it's a browser window
+                    browser_keywords = ['chrome', 'edge', 'firefox', 'opera', 'brave', 'vivaldi', 'microsoft edge']
+                    if any(keyword in window_title.lower() for keyword in browser_keywords):
                         # Try to extract URL from title
+                        url_pattern = r'https?://[^\s<>"\'\)]+'
                         match = re.search(url_pattern, window_title)
                         if match:
                             url = match.group(0).rstrip('.,;:!?)')
@@ -1841,190 +1738,56 @@ class TestCaseCapture:
                                 domain_part = url.split('://')[1].split('/')[0]
                                 if '.' in domain_part and len(domain_part) > 3:
                                     return url
-                
-                # Strategy 2: If exact match not found, try any window from selected browser (ignore mode)
-                self.log_message(f"Exact match not found, trying any {browser} window...", "INFO")
-                for hwnd, window_title in windows:
-                    title_lower = window_title.lower()
-                    
-                    # Check if it matches the browser (ignore mode)
-                    browser_match = any(keyword in title_lower for keyword in browser_keywords.get(browser, []))
-                    if browser_match:
-                        # Try to extract URL from title
-                        match = re.search(url_pattern, window_title)
-                        if match:
-                            url = match.group(0).rstrip('.,;:!?)')
-                            if url.startswith('http://') or url.startswith('https://'):
-                                domain_part = url.split('://')[1].split('/')[0]
-                                if '.' in domain_part and len(domain_part) > 3:
-                                    return url
-                
-                # Strategy 3: If still not found, try any browser window (last resort)
-                self.log_message(f"Browser-specific match not found, trying any browser window...", "INFO")
-                all_browser_keywords = []
-                for keywords in browser_keywords.values():
-                    all_browser_keywords.extend(keywords)
-                
-                for hwnd, window_title in windows:
-                    title_lower = window_title.lower()
-                    
-                    # Check if it's any browser window
-                    if any(keyword in title_lower for keyword in all_browser_keywords):
-                        # Try to extract URL from title
-                        match = re.search(url_pattern, window_title)
-                        if match:
-                            url = match.group(0).rstrip('.,;:!?)')
-                            if url.startswith('http://') or url.startswith('https://'):
-                                domain_part = url.split('://')[1].split('/')[0]
-                                if '.' in domain_part and len(domain_part) > 3:
-                                    return url
-            except Exception as e:
-                self.log_message(f"Error detecting from window title: {e}", "WARNING")
+        except:
+            pass
         return None
     
-    def _activate_browser_window(self, browser, mode):
-        """Activate the browser window matching the specified browser and mode"""
-        if sys.platform == "win32":
-            try:
-                import win32gui
-                import win32con
-                
-                browser_keywords = {
-                    "chrome": ["chrome", "google chrome"],
-                    "edge": ["edge", "microsoft edge"],
-                    "firefox": ["firefox", "mozilla firefox"]
-                }
-                
-                mode_keywords = {
-                    "normal": [],
-                    "incognito": ["incognito", "private"]
-                }
-                
-                # Get all visible windows
-                windows = []
-                def enum_windows_callback(hwnd, param):
-                    try:
-                        if win32gui.IsWindowVisible(hwnd):
-                            window_title = win32gui.GetWindowText(hwnd)
-                            if window_title:
-                                param.append((hwnd, window_title))
-                    except:
-                        pass
-                    return True
-                
-                win32gui.EnumWindows(enum_windows_callback, windows)
-                
-                # Strategy 1: Find exact matching browser window (browser + mode)
-                for hwnd, window_title in windows:
-                    title_lower = window_title.lower()
-                    
-                    # Check if it matches the browser
-                    browser_match = any(keyword in title_lower for keyword in browser_keywords.get(browser, []))
-                    if not browser_match:
-                        continue
-                    
-                    # Check if it matches the mode
-                    if mode == "incognito":
-                        mode_match = any(keyword in title_lower for keyword in mode_keywords["incognito"])
-                    else:
-                        mode_match = not any(keyword in title_lower for keyword in mode_keywords["incognito"])
-                    
-                    if mode_match:
-                        # Activate this window
-                        try:
-                            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                            win32gui.SetForegroundWindow(hwnd)
-                            self.log_message(f"Activated {browser} window ({mode} mode)", "INFO")
-                            return True
-                        except Exception as e:
-                            self.log_message(f"Could not activate window: {e}", "WARNING")
-                
-                # Strategy 2: If exact match not found, try windows from selected browser that match the mode preference
-                # For normal mode, prefer windows without incognito/private keywords
-                # For incognito mode, prefer windows with incognito/private keywords
-                self.log_message(f"Exact match not found, trying to activate {browser} window matching mode preference...", "INFO")
-                for hwnd, window_title in windows:
-                    title_lower = window_title.lower()
-                    
-                    # Check if it matches the browser
-                    browser_match = any(keyword in title_lower for keyword in browser_keywords.get(browser, []))
-                    if not browser_match:
-                        continue
-                    
-                    # For normal mode, skip incognito/private windows
-                    if mode == "normal":
-                        has_incognito_keywords = any(keyword in title_lower for keyword in mode_keywords["incognito"])
-                        if has_incognito_keywords:
-                            continue  # Skip incognito windows when normal mode is selected
-                    
-                    # For incognito mode, prefer windows with incognito/private keywords, but also accept others as fallback
-                    # Activate this window
-                    try:
-                        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                        win32gui.SetForegroundWindow(hwnd)
-                        self.log_message(f"Activated {browser} window (mode preference: {mode})", "INFO")
-                        return True
-                    except Exception as e:
-                        self.log_message(f"Could not activate window: {e}", "WARNING")
-            except Exception as e:
-                self.log_message(f"Error activating browser window: {e}", "WARNING")
-        return False
-    
     def _try_get_url_via_keyboard(self):
-        """Try to get URL by using keyboard automation (Ctrl+L to focus address bar, then Ctrl+C to copy)"""
+        """Try to get URL by using keyboard automation (Ctrl+L to focus address bar, then Ctrl+C to copy) - optimized"""
         try:
             if not PYNPUT_AVAILABLE:
-                self.log_message("pynput not available for keyboard automation", "WARNING")
                 return None
             
             import time
             from pynput.keyboard import Key, Controller as KeyboardController
             
-            # First, try to find and activate browser window
+            # First, try to find and activate browser window (non-blocking check)
             browser_hwnd = self._find_and_activate_browser_window()
-            if not browser_hwnd:
-                self.log_message("Could not find or activate browser window", "WARNING")
-                # Still try keyboard automation - user might have browser focused
-                self.log_message("Attempting keyboard automation anyway...", "INFO")
-            else:
-                self.log_message("Browser window activated, waiting 0.5 seconds...", "INFO")
-                time.sleep(0.5)  # Give window time to activate
+            if browser_hwnd:
+                time.sleep(0.3)  # Reduced wait time for faster response
             
             keyboard = KeyboardController()
             
             # Press Ctrl+L to focus address bar
-            self.log_message("Pressing Ctrl+L to focus address bar...", "INFO")
             keyboard.press(Key.ctrl)
             keyboard.press('l')
             keyboard.release('l')
             keyboard.release(Key.ctrl)
             
-            time.sleep(0.5)  # Wait for address bar to focus (increased wait time)
+            time.sleep(0.3)  # Reduced wait time
             
-            # Press Ctrl+A to select all (in case there's text selected)
+            # Press Ctrl+A to select all
             keyboard.press(Key.ctrl)
             keyboard.press('a')
             keyboard.release('a')
             keyboard.release(Key.ctrl)
             
-            time.sleep(0.2)
+            time.sleep(0.1)  # Reduced wait time
             
             # Press Ctrl+C to copy URL
-            self.log_message("Pressing Ctrl+C to copy URL...", "INFO")
             keyboard.press(Key.ctrl)
             keyboard.press('c')
             keyboard.release('c')
             keyboard.release(Key.ctrl)
             
-            time.sleep(0.5)  # Wait for clipboard to update (increased wait time)
+            time.sleep(0.3)  # Reduced wait time for clipboard
             
-            # Try to get URL from clipboard multiple times
-            for attempt in range(3):
+            # Try to get URL from clipboard (reduced attempts for faster response)
+            for attempt in range(2):  # Reduced from 3 to 2 attempts
                 try:
                     clipboard_url = self.root.clipboard_get()
                     if clipboard_url:
                         clipboard_url = clipboard_url.strip()
-                        self.log_message(f"Clipboard content: {clipboard_url[:50]}...", "INFO")
                         if clipboard_url.startswith('http://') or clipboard_url.startswith('https://'):
                             # Validate it's a proper URL
                             try:
@@ -2032,23 +1795,16 @@ class TestCaseCapture:
                                 if len(url_parts) == 2:
                                     domain_part = url_parts[1].split('/')[0]
                                     if '.' in domain_part and len(domain_part) > 3:
-                                        self.log_message(f"✅ Valid URL found in clipboard: {clipboard_url}", "SUCCESS")
                                         return clipboard_url
-                            except Exception as e:
-                                self.log_message(f"URL validation error: {e}", "WARNING")
-                    if attempt < 2:
-                        time.sleep(0.3)  # Wait a bit more and try again
-                except tk.TclError:
-                    if attempt < 2:
-                        time.sleep(0.3)
-                except Exception as e:
-                    self.log_message(f"Clipboard read error: {e}", "WARNING")
-                    if attempt < 2:
-                        time.sleep(0.3)
-        except Exception as e:
-            self.log_message(f"Keyboard automation error: {e}", "WARNING")
-            import traceback
-            self.log_message(f"Traceback: {traceback.format_exc()}", "WARNING")
+                            except:
+                                pass
+                    if attempt < 1:
+                        time.sleep(0.2)  # Reduced wait time
+                except:
+                    if attempt < 1:
+                        time.sleep(0.2)
+        except:
+            pass
         return None
     
     def _find_and_activate_browser_window(self):
@@ -2292,27 +2048,42 @@ class TestCaseCapture:
                 return False
         return False
     
-    def _handle_url_change_with_confirmation(self, new_url):
+    def _handle_url_change_with_confirmation(self, new_url, browser=None, mode=None):
         """Handle URL change with user confirmation"""
+        # Format mode and browser names for display
+        if browser and mode:
+            mode_display = "Normal Mode" if mode == "normal" else "Incognito Mode" if browser == "chrome" else "New Private Window"
+            browser_display = {"chrome": "Google Chrome", "edge": "Microsoft Edge", "firefox": "Mozilla Firefox"}.get(browser, browser.capitalize())
+        else:
+            mode_display = None
+            browser_display = None
+        
         if self.current_url:
             # URL already set - ask user if they want to update
-            response = messagebox.askyesno("URL Changed Detected", 
-                                          f"A different URL was detected in your browser:\n\n"
-                                          f"New URL: {new_url}\n"
-                                          f"Current URL: {self.current_url}\n\n"
-                                          f"What do you want to do?\n\n"
-                                          f"• Click 'Yes' to update to the new URL\n"
-                                          f"• Click 'No' to continue with the existing URL")
+            message = f"A different URL was detected in your browser:\n\n"
+            message += f"New URL: {new_url}\n"
+            if browser_display and mode_display:
+                message += f"Browser: {browser_display}\n"
+                message += f"Mode: {mode_display}\n"
+            message += f"\nCurrent URL: {self.current_url}\n\n"
+            message += f"What do you want to do?\n\n"
+            message += f"• Click 'Yes' to update to the new URL\n"
+            message += f"• Click 'No' to continue with the existing URL"
+            
+            response = messagebox.askyesno("URL Changed Detected", message)
             if response:
                 # User wants to update to new URL
                 try:
                     self.browser_monitor._handle_url_change(new_url)
-                    messagebox.showinfo("URL Updated", 
-                                          f"URL successfully updated!\n\n"
-                                          f"New URL: {new_url}\n"
-                                          f"Module: {self.current_module}\n"
-                                          f"Page: {self.current_page}\n\n"
-                                          f"You can now continue capturing test cases.")
+                    update_message = f"URL successfully updated!\n\n"
+                    update_message += f"New URL: {new_url}\n"
+                    if browser_display and mode_display:
+                        update_message += f"Browser: {browser_display}\n"
+                        update_message += f"Mode: {mode_display}\n"
+                    update_message += f"Module: {self.current_module}\n"
+                    update_message += f"Page: {self.current_page}\n\n"
+                    update_message += f"You can now continue capturing test cases."
+                    messagebox.showinfo("URL Updated", update_message)
                 except Exception as e:
                     self.log_message(f"❌ Error updating URL: {e}", "ERROR")
                     messagebox.showerror("Error", f"Error updating URL:\n{e}")
@@ -2323,12 +2094,15 @@ class TestCaseCapture:
             # No URL set yet - just update it
             try:
                 self.browser_monitor._handle_url_change(new_url)
-                messagebox.showinfo("URL Detected", 
-                              f"URL successfully detected and updated!\n\n"
-                                  f"URL: {new_url}\n"
-                              f"Module: {self.current_module}\n"
-                              f"Page: {self.current_page}\n\n"
-                              f"You can now start capturing test cases.")
+                detect_message = f"URL successfully detected and updated!\n\n"
+                detect_message += f"URL: {new_url}\n"
+                if browser_display and mode_display:
+                    detect_message += f"Browser: {browser_display}\n"
+                    detect_message += f"Mode: {mode_display}\n"
+                detect_message += f"Module: {self.current_module}\n"
+                detect_message += f"Page: {self.current_page}\n\n"
+                detect_message += f"You can now start capturing test cases."
+                messagebox.showinfo("URL Detected", detect_message)
             except Exception as e:
                 self.log_message(f"❌ Error updating URL: {e}", "ERROR")
                 messagebox.showerror("Error", f"Error updating URL:\n{e}")
