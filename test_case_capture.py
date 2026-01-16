@@ -782,12 +782,14 @@ class ActionMonitor:
                         action = f"Switched to '{detected_tab}' tab"
                         self.root.after(0, lambda: self.callback(f"[{timestamp}] {action}"))
                         
-                        # Also log it prominently
+                        # Also log it prominently with tab name clearly displayed
                         if self.log_callback:
                             self.root.after(0, lambda: self.log_callback(
                                 "=" * 60, "INFO"))
                             self.root.after(0, lambda: self.log_callback(
-                                f"🔄 TAB SWITCH AUTO-DETECTED: {detected_tab}", "ACTION"))
+                                f"🔄 TAB SWITCH AUTO-DETECTED: Switched to '{detected_tab}' tab", "ACTION"))
+                            self.root.after(0, lambda: self.log_callback(
+                                f"Tab Name: {detected_tab}", "INFO"))
                             if current_url:
                                 self.root.after(0, lambda: self.log_callback(
                                     f"URL unchanged: {current_url}", "INFO"))
@@ -813,22 +815,51 @@ class ActionMonitor:
                     f"Error checking tab switch: {e}", "ERROR"))
     
     def _extract_tab_name_from_title_change(self, old_title, new_title):
-        """Extract tab name from window title change - generic approach"""
+        """Extract tab name from window title change - improved to better detect tab names"""
         try:
             if not old_title or not new_title:
                 return None
             
+            # Common tab names to look for (case-insensitive)
+            common_tab_names = [
+                "Accounts", "Users", "Notification", "Settings", "Dashboard", 
+                "Profile", "Preferences", "Options", "Configuration",
+                "General", "Advanced", "Security", "Privacy", "About"
+            ]
+            
+            # First, check if any common tab name appears in new title but not in old
+            old_title_lower = old_title.lower()
+            new_title_lower = new_title.lower()
+            
+            for tab_name in common_tab_names:
+                tab_lower = tab_name.lower()
+                # Check if tab name is in new title but not in old (or in a different position)
+                if tab_lower in new_title_lower:
+                    # Check if it's a new occurrence or different position
+                    old_positions = [i for i in range(len(old_title_lower)) if old_title_lower.startswith(tab_lower, i)]
+                    new_positions = [i for i in range(len(new_title_lower)) if new_title_lower.startswith(tab_lower, i)]
+                    
+                    # If tab name appears in new title but not in old, or in different position
+                    if not old_positions or (new_positions and new_positions != old_positions):
+                        # Verify it's a standalone word (not part of another word)
+                        import re
+                        pattern = r'\b' + re.escape(tab_name) + r'\b'
+                        if re.search(pattern, new_title, re.IGNORECASE):
+                            return tab_name
+            
             # Common separators in window titles
-            separators = [' > ', ' - ', ' | ', ' / ', ' :: ']
+            separators = [' > ', ' - ', ' | ', ' / ', ' :: ', ' >', ' -', ' |']
             
             # Split titles by common separators
             old_parts = None
             new_parts = None
+            used_separator = None
             
             for sep in separators:
-                if sep in old_title and sep in new_title:
-                    old_parts = old_title.split(sep)
-                    new_parts = new_title.split(sep)
+                if sep in old_title or sep in new_title:
+                    old_parts = old_title.split(sep) if sep in old_title else [old_title]
+                    new_parts = new_title.split(sep) if sep in new_title else [new_title]
+                    used_separator = sep
                     break
             
             # If no separator found, try to find differences word by word
@@ -841,9 +872,9 @@ class ActionMonitor:
                 if new_unique_words:
                     # Take the last unique word (usually the tab name)
                     potential_tab = new_unique_words[-1]
-                    # Clean up common suffixes
-                    potential_tab = potential_tab.rstrip(' - > | /')
-                    if len(potential_tab) > 2:  # Filter out very short words
+                    # Clean up common suffixes and browser names
+                    potential_tab = potential_tab.rstrip(' - > | /').rstrip(' - Google Chrome').rstrip(' - Chrome').rstrip(' - Edge')
+                    if len(potential_tab) > 2 and potential_tab.lower() not in ['chrome', 'edge', 'firefox', 'browser']:
                         return potential_tab
                 return None
             
@@ -851,45 +882,52 @@ class ActionMonitor:
             if len(old_parts) == len(new_parts):
                 # Same structure, find the changed part
                 for i, (old_part, new_part) in enumerate(zip(old_parts, new_parts)):
-                    if old_part.strip() != new_part.strip():
+                    old_clean = old_part.strip().rstrip(' - Google Chrome').rstrip(' - Chrome').rstrip(' - Edge')
+                    new_clean = new_part.strip().rstrip(' - Google Chrome').rstrip(' - Chrome').rstrip(' - Edge')
+                    if old_clean != new_clean:
                         # This part changed - likely the tab name
-                        changed_part = new_part.strip()
+                        changed_part = new_clean
                         # Clean up common prefixes/suffixes
                         changed_part = changed_part.rstrip(' - > | /')
-                        if len(changed_part) > 2:
+                        if len(changed_part) > 2 and changed_part.lower() not in ['chrome', 'edge', 'firefox', 'browser']:
                             return changed_part
             elif len(new_parts) > len(old_parts):
                 # New title has more parts - the extra part is likely the tab
                 extra_parts = new_parts[len(old_parts):]
                 if extra_parts:
                     tab_name = extra_parts[0].strip()
-                    tab_name = tab_name.rstrip(' - > | /')
-                    if len(tab_name) > 2:
+                    tab_name = tab_name.rstrip(' - > | /').rstrip(' - Google Chrome').rstrip(' - Chrome').rstrip(' - Edge')
+                    if len(tab_name) > 2 and tab_name.lower() not in ['chrome', 'edge', 'firefox', 'browser']:
                         return tab_name
             elif len(old_parts) > len(new_parts):
                 # Old title had more parts - check what's different
                 for i, new_part in enumerate(new_parts):
-                    if i < len(old_parts) and old_parts[i].strip() != new_part.strip():
-                        changed_part = new_part.strip()
+                    if i < len(old_parts):
+                        old_clean = old_parts[i].strip().rstrip(' - Google Chrome').rstrip(' - Chrome').rstrip(' - Edge')
+                        new_clean = new_part.strip().rstrip(' - Google Chrome').rstrip(' - Chrome').rstrip(' - Edge')
+                        if old_clean != new_clean:
+                            changed_part = new_clean
                         changed_part = changed_part.rstrip(' - > | /')
-                        if len(changed_part) > 2:
+                        if len(changed_part) > 2 and changed_part.lower() not in ['chrome', 'edge', 'firefox', 'browser']:
                             return changed_part
             
-            # Fallback: Look for common tab patterns
+            # Fallback: Look for common tab patterns with regex
             import re
-            # Look for patterns like "> TabName" or "- TabName"
+            # Look for patterns like "> TabName" or "- TabName" or capitalized words
             patterns = [
                 r'[>\-|]\s*([A-Z][a-zA-Z]+)',  # Capitalized word after separator
-                r'([A-Z][a-z]+)\s*$',  # Capitalized word at end
+                r'([A-Z][a-z]+)\s*[-|>]',  # Capitalized word before separator
+                r'([A-Z][a-zA-Z]+)\s*$',  # Capitalized word at end (but not browser name)
             ]
             
             for pattern in patterns:
-                match = re.search(pattern, new_title)
-                if match:
+                matches = re.finditer(pattern, new_title)
+                for match in matches:
                     potential_tab = match.group(1)
-                    # Check if this word wasn't in old title
-                    if potential_tab not in old_title:
-                        return potential_tab
+                    # Check if this word wasn't in old title and is not a browser name
+                    if potential_tab.lower() not in ['chrome', 'edge', 'firefox', 'browser', 'google']:
+                        if potential_tab not in old_title or old_title.find(potential_tab) != new_title.find(potential_tab):
+                            return potential_tab
             
             return None
         except Exception as e:
@@ -920,12 +958,14 @@ class ActionMonitor:
                     action = f"Switched to '{detected_tab}' tab"
                     self.root.after(0, lambda: self.callback(f"[{timestamp}] {action}"))
                     
-                    # Also log it prominently
+                    # Also log it prominently with tab name clearly displayed
                     if self.log_callback:
                         self.root.after(0, lambda: self.log_callback(
                             "=" * 60, "INFO"))
                         self.root.after(0, lambda: self.log_callback(
-                            f"🔄 TAB SWITCH AUTO-DETECTED: {detected_tab}", "ACTION"))
+                            f"🔄 TAB SWITCH AUTO-DETECTED: Switched to '{detected_tab}' tab", "ACTION"))
+                        self.root.after(0, lambda: self.log_callback(
+                            f"Tab Name: {detected_tab}", "INFO"))
                         if current_url:
                             self.root.after(0, lambda: self.log_callback(
                                 f"URL unchanged: {current_url}", "INFO"))
@@ -953,7 +993,7 @@ class TestCaseCapture:
         self.test_cases_by_module = {}  # {module: [test_cases]}
         
         # Excel file path
-        self.excel_file_path = "test_cases.xlsx"
+        self.excel_file_path = "Doceree_TC.xlsx"
         
         # Test case counter per module
         self.test_case_counters = {}  # {module: counter}
@@ -971,8 +1011,13 @@ class TestCaseCapture:
         
         # Track URL change alerts to prevent duplicates
         self.last_url_change_alert = None  # Track last URL change that showed alert
+        
+        # Detection state flag
+        self._detection_in_progress = False
+        self._url_detected_flag = False  # Track if URL was detected (for timeout)
         self.url_change_alert_time = 0  # Timestamp of last alert
         self.url_change_alert_showing = False  # Flag to track if alert dialog is currently open
+        self._url_cleared_flag = False  # Flag to prevent browser monitor from re-setting URL after clear
         
         # Browser monitoring - start with no base_url, will be set dynamically
         self.browser_monitor = BrowserMonitor(self.on_url_changed, base_url=None)
@@ -1402,6 +1447,16 @@ class TestCaseCapture:
     
     def on_url_changed(self, action, url, module, page):
         """Callback when URL changes - automatically updates URL without popup"""
+        # If URL was just cleared, ignore auto-updates for a short time
+        if hasattr(self, '_url_cleared_flag') and self._url_cleared_flag:
+            # URL was cleared - don't auto-update for 2 seconds
+            import time
+            if hasattr(self, '_url_clear_time'):
+                elapsed = time.time() - self._url_clear_time
+                if elapsed < 2.0:  # Ignore updates for 2 seconds after clear
+                    self.log_message(f"⏸️ Ignoring auto URL update (URL was just cleared): {url}", "INFO")
+                    return
+        
         old_url = self.current_url
         
         # Prevent duplicate processing of the same URL change
@@ -1528,51 +1583,261 @@ class TestCaseCapture:
     
     def detect_url_from_browser(self):
         """Detect URL from any open browser window - runs in background thread for fast response"""
+        # FORCE RESET: Check if button is stuck in "Detecting..." state and reset if needed
+        if hasattr(self, 'detect_url_button'):
+            try:
+                button_text = self.detect_url_button.cget('text')
+                button_state = self.detect_url_button.cget('state')
+                # If button is disabled with "Detecting..." text, force reset
+                if button_state == 'disabled' and 'Detecting' in button_text:
+                    self.log_message("🔧 Button was stuck - forcing reset...", "WARNING")
+                    self._detection_in_progress = False
+                    self._reset_detection_button()
+                    self._hide_loading_indicator()
+                    # Small delay to ensure reset completes
+                    import time
+                    time.sleep(0.1)
+            except:
+                pass
+        
+        # Prevent multiple simultaneous detections (but allow if we just reset)
+        if hasattr(self, '_detection_in_progress') and self._detection_in_progress:
+            self.log_message("⚠️ Detection already in progress. Please wait...", "WARNING")
+            return
+        
+        # First, check if any browser is open
+        browser_found = self._check_if_browser_is_open()
+        if not browser_found:
+            messagebox.showwarning("No Browser Found", 
+                                 "No browser window detected!\n\n"
+                                 "Please:\n"
+                                 "1. Open your browser (Chrome, Edge, or Firefox)\n"
+                                 "2. Navigate to the page you want to test\n"
+                                 "3. Make sure the browser window is visible (not minimized)\n"
+                                 "4. Try 'Detect URL from Browser' again\n\n"
+                                 "Or use 'Paste URL Manually' button to enter URL directly.")
+            return
+        
+        # Set detection flag
+        self._detection_in_progress = True
+        
+        # Track if URL was detected (for timeout check)
+        self._url_detected_flag = False
+        
+        # Reset URL cleared flag (allow detection to work)
+        self._url_cleared_flag = False
+        if hasattr(self, '_url_clear_time'):
+            delattr(self, '_url_clear_time')
+        
+        # Store detection start time for timeout tracking
+        import time
+        self._detection_start_time = time.time()
+        
         # Disable button and show loader
         if hasattr(self, 'detect_url_button'):
-            self.detect_url_button.config(state='disabled', text='⏳ Detecting...')
+            try:
+                self.detect_url_button.config(state='disabled', text='⏳ Detecting...')
+            except:
+                # If button doesn't exist or is destroyed, continue anyway
+                pass
         
         # Show loading indicator
         self._show_loading_indicator()
         self.log_message("Detecting URL from browser...", "INFO")
+        self.log_message(f"Browser windows found: {browser_found}", "INFO")
         
         # Run detection in background thread to avoid blocking UI
         def detect_in_thread():
             try:
                 url = None
+                detection_details = []
                 
-                # Method 1: Try window title detection first (fastest - ~0.01s)
-                self.root.after(0, lambda: self.log_message("Method 1: Trying window title detection...", "INFO"))
-                url = self._get_url_from_window_title_simple()
-                if url:
-                    self.root.after(0, lambda: self.log_message(f"✅ URL found via window title: {url}", "SUCCESS"))
-                else:
-                    # Method 2: Try Chrome DevTools Protocol (works for Chrome and Edge - ~0.3s per port)
-                    self.root.after(0, lambda: self.log_message("Method 2: Trying Chrome DevTools Protocol...", "INFO"))
-                    url = self._get_url_from_chrome_devtools_simple()
-                    if url:
-                        self.root.after(0, lambda: self.log_message(f"✅ URL found via DevTools: {url}", "SUCCESS"))
+                # First, try to find and activate a browser window (with timeout)
+                # (The tool window might be active when button is clicked)
+                try:
+                    browser_hwnd = self._find_and_activate_any_browser_window()
+                    if browser_hwnd:
+                        self.root.after(0, lambda: self.log_message("✅ Browser window found and activated", "SUCCESS"))
+                        import time
+                        time.sleep(0.2)  # Reduced wait time
                     else:
-                        # Method 3: Try keyboard automation (slowest, use as last resort - ~2s)
-                        self.root.after(0, lambda: self.log_message("Method 3: Trying keyboard automation...", "INFO"))
-                        url = self._try_get_url_via_keyboard()
+                        # Check if current active window is a browser
+                        active_browser = self._verify_active_window_is_browser()
+                        if not active_browser:
+                            detection_details.append("⚠️ No browser window found - please open a browser first")
+                            self.root.after(0, lambda: self.log_message("⚠️ No browser window found. Please open your browser first.", "WARNING"))
+                        else:
+                            self.root.after(0, lambda: self.log_message(f"✅ Active window is a browser: {active_browser}", "INFO"))
+                except Exception as e:
+                    detection_details.append(f"Window activation error: {str(e)}")
+                    self.root.after(0, lambda: self.log_message(f"⚠️ Error activating browser window: {str(e)}", "WARNING"))
+                
+                # Log detection state for debugging
+                self.root.after(0, lambda: self.log_message(f"🔍 Detection state: _detection_in_progress={getattr(self, '_detection_in_progress', 'NOT SET')}", "INFO"))
+                
+                # Method 1: Try keyboard automation first (most reliable - works for all browsers)
+                # This should work even if window title doesn't have URL
+                self.root.after(0, lambda: self.log_message("Method 1: Trying keyboard automation (Ctrl+L, Ctrl+C)...", "INFO"))
+                try:
+                    url = self._try_get_url_via_keyboard()
+                    if url:
+                        self.root.after(0, lambda: self.log_message(f"✅ URL found via keyboard: {url}", "SUCCESS"))
+                    else:
+                        detection_details.append("Keyboard: Could not copy URL from address bar (make sure browser window is active)")
+                except Exception as e:
+                    detection_details.append(f"Keyboard error: {str(e)}")
+                
+                if not url:
+                    # Method 2: Try Chrome DevTools Protocol (works for Chrome and Edge - ~0.2s per port)
+                    self.root.after(0, lambda: self.log_message("Method 2: Trying Chrome DevTools Protocol...", "INFO"))
+                    try:
+                        url = self._get_url_from_chrome_devtools_simple()
                         if url:
-                            self.root.after(0, lambda: self.log_message(f"✅ URL found via keyboard: {url}", "SUCCESS"))
+                            self.root.after(0, lambda: self.log_message(f"✅ URL found via DevTools: {url}", "SUCCESS"))
+                        else:
+                            detection_details.append("DevTools: No browser with remote debugging found (ports 9222-9226)")
+                    except Exception as e:
+                        detection_details.append(f"DevTools error: {str(e)}")
+                
+                if not url:
+                    # Method 3: Try window title detection (many browsers don't show URL in title)
+                    self.root.after(0, lambda: self.log_message("Method 3: Trying window title detection...", "INFO"))
+                    try:
+                        url = self._get_url_from_window_title_simple()
+                        if url:
+                            self.root.after(0, lambda: self.log_message(f"✅ URL found via window title: {url}", "SUCCESS"))
+                        else:
+                            detection_details.append("Window title: No URL found in browser window title (this is normal for most browsers)")
+                    except Exception as e:
+                        detection_details.append(f"Window title error: {str(e)}")
+                
+                # Log detection details if all methods failed
+                if not url and detection_details:
+                    self.root.after(0, lambda: self.log_message("=" * 60, "INFO"))
+                    self.root.after(0, lambda: self.log_message("❌ All detection methods failed:", "WARNING"))
+                    for detail in detection_details:
+                        self.root.after(0, lambda d=detail: self.log_message(f"  • {d}", "WARNING"))
+                    self.root.after(0, lambda: self.log_message("=" * 60, "INFO"))
+                
+                # Mark URL as detected if found
+                if url:
+                    self._url_detected_flag = True
+                    # Reset detection flag since we got a result
+                    self._detection_in_progress = False
                 
                 # Update UI in main thread
+                # If URL is None, don't reset detection_in_progress - let timeout handle it
+                if url:
+                    # URL found - reset flag immediately
+                    self._detection_in_progress = False
+                # else: keep flag True so timeout can detect it
+                
                 self.root.after(0, lambda: self._handle_detection_result(url))
             except Exception as e:
-                self.root.after(0, lambda: self._handle_detection_error(str(e)))
+                import traceback
+                error_details = traceback.format_exc()
+                # Don't reset flag here - let timeout handle it
+                self.root.after(0, lambda: self._handle_detection_error(f"{str(e)}\n\nDetails:\n{error_details}"))
         
         # Start detection thread
         thread = threading.Thread(target=detect_in_thread, daemon=True)
         thread.start()
+        
+        # 10-second timeout: Check if URL was detected, show alert if not
+        def check_detection_timeout():
+            try:
+                import time
+                # Check if enough time has passed (at least 10 seconds since detection started)
+                if hasattr(self, '_detection_start_time'):
+                    elapsed = time.time() - self._detection_start_time
+                    if elapsed >= 10:
+                        # Check if URL was detected
+                        url_was_detected = hasattr(self, '_url_detected_flag') and self._url_detected_flag
+                        
+                        # If URL wasn't detected, show alert (regardless of detection_in_progress state)
+                        if not url_was_detected:
+                            # Check if button is still in detecting state
+                            button_still_detecting = False
+                            if hasattr(self, 'detect_url_button'):
+                                try:
+                                    button_state = self.detect_url_button.cget('state')
+                                    button_text = self.detect_url_button.cget('text')
+                                    if button_state == 'disabled' and 'Detecting' in button_text:
+                                        button_still_detecting = True
+                                except:
+                                    pass
+                            
+                            # URL not detected within 10 seconds - show alert
+                            self.log_message("⚠️ URL detection timeout (10s) - URL not detected", "WARNING")
+                            self._detection_in_progress = False
+                            self._reset_detection_button()
+                            self._hide_loading_indicator()
+                            
+                            # Only show alert if button is still detecting (to avoid duplicate alerts)
+                            if button_still_detecting:
+                                # Show alert dialog
+                                messagebox.showwarning("URL Not Detected", 
+                                                     "URL could not be detected within 10 seconds.\n\n"
+                                                     "Possible reasons:\n"
+                                                     "• Browser window is not active/focused\n"
+                                                     "• Browser doesn't have remote debugging enabled\n"
+                                                     "• URL is not accessible from current methods\n\n"
+                                                     "Please try:\n"
+                                                     "1. Click on your browser window to make it active\n"
+                                                     "2. Use 'Paste URL Manually' button (Ctrl+L, Ctrl+A, Ctrl+C in browser)\n"
+                                                     "3. Or use 'Manual Override' section to enter URL directly")
+                                self.log_message("💡 Tip: Use 'Paste URL Manually' for faster detection", "INFO")
+                        else:
+                            # URL was detected, just make sure button is reset
+                            if hasattr(self, '_detection_in_progress') and self._detection_in_progress:
+                                self._detection_in_progress = False
+                                self._reset_detection_button()
+                                self._hide_loading_indicator()
+            except Exception as e:
+                # Even if there's an error, try to reset
+                try:
+                    self._detection_in_progress = False
+                    self._reset_detection_button()
+                    self._hide_loading_indicator()
+                except:
+                    pass
+        
+        # Safety timeout: Reset button state after 3 seconds if still detecting (very aggressive)
+        def safety_timeout():
+            try:
+                if hasattr(self, '_detection_in_progress') and self._detection_in_progress:
+                    # Don't reset here if we're waiting for the 10-second timeout
+                    # Just log a warning
+                    pass
+                # Also check button state directly
+                if hasattr(self, 'detect_url_button'):
+                    try:
+                        button_state = self.detect_url_button.cget('state')
+                        button_text = self.detect_url_button.cget('text')
+                        if button_state == 'disabled' and 'Detecting' in button_text:
+                            # Only reset if URL was already detected or if it's been too long
+                            if hasattr(self, '_url_detected_flag') and self._url_detected_flag:
+                                self.log_message("🔧 Button still stuck after detection - forcing reset", "WARNING")
+                                self._detection_in_progress = False
+                                self._reset_detection_button()
+                                self._hide_loading_indicator()
+                    except:
+                        pass
+            except:
+                pass
+        
+        self.root.after(3000, safety_timeout)  # 3 second safety check
+        self.root.after(10000, check_detection_timeout)  # 10 second timeout with alert
     
     def _show_loading_indicator(self):
         """Show animated loading indicator"""
         # Stop any existing animation
-        if hasattr(self, 'loading_animation_id'):
-            self.root.after_cancel(self.loading_animation_id)
+        if hasattr(self, 'loading_animation_id') and self.loading_animation_id is not None:
+            try:
+                self.root.after_cancel(self.loading_animation_id)
+            except (tk.TclError, ValueError):
+                # Invalid ID - ignore
+                pass
             self.loading_animation_id = None
         
         if not hasattr(self, 'loading_label'):
@@ -1611,22 +1876,129 @@ class TestCaseCapture:
         """Hide loading indicator"""
         # Stop animation
         self.loading_active = False
-        if hasattr(self, 'loading_animation_id'):
-            self.root.after_cancel(self.loading_animation_id)
+        if hasattr(self, 'loading_animation_id') and self.loading_animation_id is not None:
+            try:
+                self.root.after_cancel(self.loading_animation_id)
+            except (tk.TclError, ValueError):
+                # Invalid ID - ignore
+                pass
             self.loading_animation_id = None
         
         # Hide the label
         if hasattr(self, 'loading_label') and self.loading_label.winfo_exists():
             self.loading_label.pack_forget()
     
+    def _check_if_browser_is_open(self):
+        """Check if any browser window is open and return count"""
+        try:
+            if sys.platform == "win32":
+                import win32gui
+                browser_keywords = ['chrome', 'edge', 'firefox', 'opera', 'brave', 'vivaldi', 'microsoft edge']
+                browser_count = 0
+                browser_windows = []
+                
+                def enum_windows_callback(hwnd, param):
+                    try:
+                        if win32gui.IsWindowVisible(hwnd):
+                            window_title = win32gui.GetWindowText(hwnd)
+                            if window_title:
+                                title_lower = window_title.lower()
+                                if any(keyword in title_lower for keyword in browser_keywords):
+                                    # Exclude extension windows and popups
+                                    if 'extension' not in title_lower and 'popup' not in title_lower:
+                                        param.append(window_title)
+                    except:
+                        pass
+                    return True
+                
+                win32gui.EnumWindows(enum_windows_callback, browser_windows)
+                browser_count = len(browser_windows)
+                
+                if browser_count > 0:
+                    self.log_message(f"Found {browser_count} browser window(s): {', '.join(browser_windows[:3])}", "INFO")
+                else:
+                    self.log_message("No browser windows found", "WARNING")
+                
+                return browser_count
+        except:
+            pass
+        return 0
+    
+    def _verify_active_window_is_browser(self):
+        """Verify that the currently active window is a browser - returns browser name or None"""
+        try:
+            if sys.platform == "win32":
+                import win32gui
+                browser_keywords = ['chrome', 'edge', 'firefox', 'opera', 'brave', 'vivaldi', 'microsoft edge']
+                
+                active_hwnd = win32gui.GetForegroundWindow()
+                if not active_hwnd:
+                    return None
+                
+                active_window_title = win32gui.GetWindowText(active_hwnd)
+                if not active_window_title:
+                    return None
+                
+                title_lower = active_window_title.lower()
+                
+                # Check if active window is a browser
+                for keyword in browser_keywords:
+                    if keyword in title_lower:
+                        # Exclude extension windows and popups
+                        if 'extension' not in title_lower and 'popup' not in title_lower:
+                            return keyword.title()  # Return browser name
+                
+                return None
+        except:
+            pass
+        return None
+    
+    def _reset_detection_button(self):
+        """Reset detection button state - helper method"""
+        try:
+            if hasattr(self, 'detect_url_button'):
+                # Check if widget exists before trying to configure it
+                try:
+                    # Try to get widget info - if this fails, widget doesn't exist
+                    _ = self.detect_url_button.winfo_exists()
+                    # Force reset both state and text
+                    self.detect_url_button.config(state='normal', text='Detect URL from Browser')
+                    # Verify it worked
+                    current_state = self.detect_url_button.cget('state')
+                    if current_state != 'normal':
+                        # Force it again
+                        self.detect_url_button.config(state='normal')
+                except tk.TclError:
+                    # Widget was destroyed, that's OK
+                    pass
+        except Exception as e:
+            # Silently fail - button might not exist yet
+            pass
+    
     def _handle_detection_result(self, url):
         """Handle detection result in main thread"""
+        # Mark URL as detected only if URL is not None
+        if url:
+            self._url_detected_flag = True
+            # Reset detection flag IMMEDIATELY when URL is found
+            self._detection_in_progress = False
+        # else: Keep flag True so timeout can detect it
+        
         # Hide loading indicator
         self._hide_loading_indicator()
         
-        # Re-enable button
+        # Re-enable button IMMEDIATELY
+        self._reset_detection_button()
+        
+        # Double-check button is reset (safety)
         if hasattr(self, 'detect_url_button'):
-            self.detect_url_button.config(state='normal', text='Detect URL from Browser')
+            try:
+                button_state = self.detect_url_button.cget('state')
+                if button_state == 'disabled':
+                    self.log_message("🔧 Button still disabled - forcing reset", "WARNING")
+                    self._reset_detection_button()
+            except:
+                pass
         
         if url:
             self.log_message(f"✅ URL detected: {url}", "SUCCESS")
@@ -1649,26 +2021,76 @@ class TestCaseCapture:
     
     def _handle_detection_error(self, error_msg):
         """Handle detection error in main thread"""
+        # Don't reset flag here - let the 10-second timeout handle it
+        # This ensures the timeout alert will show if detection fails
+        # The flag will be reset by the timeout function
+        
         # Hide loading indicator
         self._hide_loading_indicator()
         
-        # Re-enable button
+        # Re-enable button IMMEDIATELY
+        self._reset_detection_button()
+        
+        # Double-check button is reset (safety)
         if hasattr(self, 'detect_url_button'):
-            self.detect_url_button.config(state='normal', text='Detect URL from Browser')
+            try:
+                button_state = self.detect_url_button.cget('state')
+                if button_state == 'disabled':
+                    self.log_message("🔧 Button still disabled after error - forcing reset", "WARNING")
+                    self._reset_detection_button()
+            except:
+                pass
+        
         self.log_message(f"❌ Error during URL detection: {error_msg}", "ERROR")
         self._show_detection_failed_dialog()
     
     def _get_url_from_chrome_devtools_simple(self):
-        """Simple Chrome DevTools URL detection without browser/mode restrictions - optimized for speed"""
+        """Simple Chrome DevTools URL detection - checks active browser window or finds one"""
         try:
             import json as json_lib
             import urllib.request
             import urllib.error
             import win32gui
             
-            # Get the active window title
+            # Get the active/foreground window
             active_hwnd = win32gui.GetForegroundWindow()
-            active_window_title = win32gui.GetWindowText(active_hwnd)
+            active_window_title = None
+            
+            if active_hwnd:
+                active_window_title = win32gui.GetWindowText(active_hwnd)
+            
+            # Verify it's a browser window and identify browser type
+            browser_keywords = ['chrome', 'edge', 'firefox', 'opera', 'brave', 'vivaldi', 'microsoft edge']
+            active_browser_type = None
+            
+            if active_window_title:
+                title_lower = active_window_title.lower()
+                for keyword in browser_keywords:
+                    if keyword in title_lower:
+                        # Exclude extension windows and popups
+                        if 'extension' not in title_lower and 'popup' not in title_lower:
+                            active_browser_type = keyword
+                            break
+            
+            # If active window is not a browser, try to find one
+            if not active_browser_type:
+                browser_hwnd = self._find_and_activate_any_browser_window()
+                if browser_hwnd:
+                    active_hwnd = browser_hwnd
+                    active_window_title = win32gui.GetWindowText(active_hwnd)
+                    if active_window_title:
+                        title_lower = active_window_title.lower()
+                        for keyword in browser_keywords:
+                            if keyword in title_lower:
+                                if 'extension' not in title_lower and 'popup' not in title_lower:
+                                    active_browser_type = keyword
+                                    break
+                else:
+                    return None  # No browser window found
+            
+            # Firefox doesn't support Chrome DevTools Protocol - skip it
+            if active_browser_type and 'firefox' in active_browser_type:
+                return None
             
             # Try multiple common ports with reduced timeout for faster response
             ports = [9222, 9223, 9224, 9225, 9226]
@@ -1681,30 +2103,64 @@ class TestCaseCapture:
                     if not tabs:
                         continue
                     
-                    # Try to find the active tab first (tab with webSocketDebuggerUrl is usually the active one)
-                    for tab in tabs:
-                        if 'webSocketDebuggerUrl' in tab and tab['webSocketDebuggerUrl']:
-                            url = tab.get('url', '')
-                            if url and (url.startswith('http://') or url.startswith('https://')):
-                                return url
+                    # STRICT: Only match tabs that match the active window title
+                    # This ensures we only get URLs from the active browser window
+                    best_match = None
+                    best_match_score = 0
                     
-                    # If no active tab found, try to match by window title
-                    if active_window_title:
+                    for tab in tabs:
+                        tab_title = tab.get('title', '')
+                        url = tab.get('url', '')
+                        
+                        if not url or not (url.startswith('http://') or url.startswith('https://')):
+                            continue
+                        
+                        # Skip chrome:// and about: pages
+                        if url.startswith('chrome://') or url.startswith('about:'):
+                            continue
+                        
+                        if tab_title and active_window_title:
+                            tab_title_lower = tab_title.lower()
+                            active_title_lower = active_window_title.lower()
+                            
+                            # Calculate match score - higher is better
+                            score = 0
+                            
+                            # Exact match gets highest score
+                            if tab_title_lower == active_title_lower:
+                                score = 100
+                            # Tab title contained in window title
+                            elif tab_title_lower in active_title_lower:
+                                score = 80
+                            # Window title contained in tab title
+                            elif active_title_lower in tab_title_lower:
+                                score = 70
+                            # Word matching
+                            else:
+                                tab_words = set(word.lower() for word in tab_title_lower.split() if len(word) > 3)
+                                active_words = set(word.lower() for word in active_title_lower.split() if len(word) > 3)
+                                common_words = tab_words.intersection(active_words)
+                                if common_words:
+                                    score = len(common_words) * 10
+                            
+                            if score > best_match_score:
+                                best_match = url
+                                best_match_score = score
+                    
+                    # Return best match if found (lowered threshold for better detection)
+                    if best_match and best_match_score >= 30:  # Lowered threshold from 50 to 30
+                        return best_match
+                    
+                    # If no good match but we have tabs, return the first valid URL from active tab
+                    # This is a fallback - the active tab usually has webSocketDebuggerUrl
+                    if not best_match:
                         for tab in tabs:
-                            tab_title = tab.get('title', '')
-                            url = tab.get('url', '')
-                            if url and (url.startswith('http://') or url.startswith('https://')):
-                                if tab_title:
-                                    tab_title_lower = tab_title.lower()
-                                    active_title_lower = active_window_title.lower()
-                                    if tab_title_lower in active_title_lower or active_title_lower in tab_title_lower:
+                            if 'webSocketDebuggerUrl' in tab and tab['webSocketDebuggerUrl']:
+                                url = tab.get('url', '')
+                                if url and (url.startswith('http://') or url.startswith('https://')):
+                                    if not url.startswith('chrome://') and not url.startswith('about:'):
                                         return url
                     
-                    # If still no match, return the first valid URL (quick fallback)
-                    for tab in tabs:
-                        url = tab.get('url', '')
-                        if url and (url.startswith('http://') or url.startswith('https://')):
-                            return url
                 except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
                     # Skip this port and try next one
                     continue
@@ -1715,48 +2171,127 @@ class TestCaseCapture:
         return None
     
     def _get_url_from_window_title_simple(self):
-        """Simple window title URL detection without browser/mode restrictions"""
+        """Simple window title URL detection - ONLY checks the currently active/foreground browser window"""
         try:
             if sys.platform == "win32":
                 import win32gui
+                import win32con
                 import re
                 
-                # Get foreground window
-                hwnd = win32gui.GetForegroundWindow()
-                window_title = win32gui.GetWindowText(hwnd)
+                browser_keywords = ['chrome', 'edge', 'firefox', 'opera', 'brave', 'vivaldi', 'microsoft edge']
+                url_pattern = r'https?://[^\s<>"\'\)]+'
                 
-                if window_title:
-                    # Check if it's a browser window
-                    browser_keywords = ['chrome', 'edge', 'firefox', 'opera', 'brave', 'vivaldi', 'microsoft edge']
-                    if any(keyword in window_title.lower() for keyword in browser_keywords):
-                        # Try to extract URL from title
-                        url_pattern = r'https?://[^\s<>"\'\)]+'
-                        match = re.search(url_pattern, window_title)
-                        if match:
-                            url = match.group(0).rstrip('.,;:!?)')
-                            if url.startswith('http://') or url.startswith('https://'):
-                                domain_part = url.split('://')[1].split('/')[0]
-                                if '.' in domain_part and len(domain_part) > 3:
+                # STRICT: Only check the foreground/active window
+                try:
+                    hwnd = win32gui.GetForegroundWindow()
+                    if not hwnd:
+                        return None
+                    
+                    window_title = win32gui.GetWindowText(hwnd)
+                    
+                    if not window_title:
+                        return None
+                    
+                    title_lower = window_title.lower()
+                    
+                    # Check if it's a browser window - verify it's actually a browser
+                    is_browser = False
+                    for keyword in browser_keywords:
+                        if keyword in title_lower:
+                            # Exclude extension windows and popups
+                            if 'extension' not in title_lower and 'popup' not in title_lower:
+                                is_browser = True
+                                break
+                    
+                    if not is_browser:
+                        return None
+                    
+                    # Check if window is minimized and try to restore it
+                    try:
+                        placement = win32gui.GetWindowPlacement(hwnd)
+                        if placement[1] == win32con.SW_SHOWMINIMIZED:
+                            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                            import time
+                            time.sleep(0.1)  # Brief wait for window to restore
+                            window_title = win32gui.GetWindowText(hwnd)  # Refresh title
+                    except:
+                        pass
+                    
+                    # Extract URL from the active window title
+                    match = re.search(url_pattern, window_title)
+                    if match:
+                        url = match.group(0).rstrip('.,;:!?)')
+                        if url.startswith('http://') or url.startswith('https://'):
+                            domain_part = url.split('://')[1].split('/')[0]
+                            if '.' in domain_part and len(domain_part) > 3:
+                                # Double-check: verify the window is still active (prevent race conditions)
+                                current_hwnd = win32gui.GetForegroundWindow()
+                                if current_hwnd == hwnd:
                                     return url
-        except:
+                except Exception as e:
+                    pass
+        except Exception as e:
             pass
         return None
     
     def _try_get_url_via_keyboard(self):
-        """Try to get URL by using keyboard automation (Ctrl+L to focus address bar, then Ctrl+C to copy) - optimized"""
+        """Try to get URL by using keyboard automation - works on currently active browser window"""
         try:
             if not PYNPUT_AVAILABLE:
                 return None
             
             import time
+            import win32gui
             from pynput.keyboard import Key, Controller as KeyboardController
             
-            # First, try to find and activate browser window (non-blocking check)
-            browser_hwnd = self._find_and_activate_browser_window()
-            if browser_hwnd:
-                time.sleep(0.3)  # Reduced wait time for faster response
+            # Get the active window
+            active_hwnd = win32gui.GetForegroundWindow()
+            if not active_hwnd:
+                return None
+            
+            active_window_title = win32gui.GetWindowText(active_hwnd)
+            if not active_window_title:
+                return None
+            
+            # Verify it's a browser window
+            title_lower = active_window_title.lower()
+            browser_keywords = ['chrome', 'edge', 'firefox', 'opera', 'brave', 'vivaldi', 'microsoft edge']
+            is_browser = False
+            for keyword in browser_keywords:
+                if keyword in title_lower:
+                    # Exclude extension windows and popups
+                    if 'extension' not in title_lower and 'popup' not in title_lower:
+                        is_browser = True
+                        break
+            
+            if not is_browser:
+                # If active window is not a browser, try to find and activate one
+                browser_hwnd = self._find_and_activate_any_browser_window()
+                if browser_hwnd:
+                    active_hwnd = browser_hwnd
+                    active_window_title = win32gui.GetWindowText(active_hwnd)
+                    time.sleep(0.2)  # Wait for window to activate
+                else:
+                    return None  # No browser window found
             
             keyboard = KeyboardController()
+            
+            # Ensure browser window is in foreground (with timeout protection)
+            try:
+                win32gui.SetForegroundWindow(active_hwnd)
+                time.sleep(0.1)  # Reduced wait time
+            except:
+                # If SetForegroundWindow fails, try alternative
+                try:
+                    import win32con
+                    win32gui.ShowWindow(active_hwnd, win32con.SW_RESTORE)
+                    win32gui.ShowWindow(active_hwnd, win32con.SW_SHOW)
+                    time.sleep(0.1)
+                except:
+                    pass
+            
+            # Don't verify window is active - just proceed (prevents hangs)
+            # The keyboard automation will work even if window isn't perfectly focused
             
             # Press Ctrl+L to focus address bar
             keyboard.press(Key.ctrl)
@@ -1764,7 +2299,7 @@ class TestCaseCapture:
             keyboard.release('l')
             keyboard.release(Key.ctrl)
             
-            time.sleep(0.3)  # Reduced wait time
+            time.sleep(0.3)  # Wait for address bar to focus
             
             # Press Ctrl+A to select all
             keyboard.press(Key.ctrl)
@@ -1772,7 +2307,7 @@ class TestCaseCapture:
             keyboard.release('a')
             keyboard.release(Key.ctrl)
             
-            time.sleep(0.1)  # Reduced wait time
+            time.sleep(0.2)  # Wait for selection
             
             # Press Ctrl+C to copy URL
             keyboard.press(Key.ctrl)
@@ -1780,10 +2315,10 @@ class TestCaseCapture:
             keyboard.release('c')
             keyboard.release(Key.ctrl)
             
-            time.sleep(0.3)  # Reduced wait time for clipboard
+            time.sleep(0.3)  # Wait for clipboard to update
             
-            # Try to get URL from clipboard (reduced attempts for faster response)
-            for attempt in range(2):  # Reduced from 3 to 2 attempts
+            # Try to get URL from clipboard (with retries)
+            for attempt in range(3):  # Increased attempts for reliability
                 try:
                     clipboard_url = self.root.clipboard_get()
                     if clipboard_url:
@@ -1798,24 +2333,63 @@ class TestCaseCapture:
                                         return clipboard_url
                             except:
                                 pass
-                    if attempt < 1:
-                        time.sleep(0.2)  # Reduced wait time
+                    if attempt < 2:
+                        time.sleep(0.2)  # Wait between attempts
                 except:
-                    if attempt < 1:
+                    if attempt < 2:
                         time.sleep(0.2)
         except:
             pass
         return None
     
     def _find_and_activate_browser_window(self):
-        """Find and activate a browser window"""
+        """Find and activate the currently active browser window - STRICT: only active window"""
         if sys.platform == "win32":
             try:
                 import win32gui
                 import win32con
                 
                 browser_keywords = ['chrome', 'edge', 'firefox', 'opera', 'brave', 'vivaldi', 'microsoft edge']
-                browser_hwnd = None
+                
+                # STRICT: Only check the foreground/active window
+                active_hwnd = win32gui.GetForegroundWindow()
+                if not active_hwnd:
+                    return None
+                
+                active_window_title = win32gui.GetWindowText(active_hwnd)
+                if not active_window_title:
+                    return None
+                
+                title_lower = active_window_title.lower()
+                
+                # Check if active window is a browser
+                if any(keyword in title_lower for keyword in browser_keywords):
+                    # Exclude extension windows and popups
+                    if 'extension' not in title_lower and 'popup' not in title_lower:
+                        # Try to ensure window is not minimized
+                        try:
+                            placement = win32gui.GetWindowPlacement(active_hwnd)
+                            if placement[1] == win32con.SW_SHOWMINIMIZED:
+                                win32gui.ShowWindow(active_hwnd, win32con.SW_RESTORE)
+                                import time
+                                time.sleep(0.1)
+                            win32gui.SetForegroundWindow(active_hwnd)
+                            return active_hwnd
+                        except:
+                            return active_hwnd
+            except Exception as e:
+                pass
+        return None
+    
+    def _find_and_activate_any_browser_window(self):
+        """Find and activate ANY browser window (not just active one) - used when tool window is active"""
+        if sys.platform == "win32":
+            try:
+                import win32gui
+                import win32con
+                
+                browser_keywords = ['chrome', 'edge', 'firefox', 'opera', 'brave', 'vivaldi', 'microsoft edge']
+                browser_windows = []
                 
                 def enum_windows_callback(hwnd, param):
                     try:
@@ -1824,32 +2398,44 @@ class TestCaseCapture:
                             if window_title:
                                 title_lower = window_title.lower()
                                 if any(keyword in title_lower for keyword in browser_keywords):
-                                    # Check if it's not a popup or extension window
+                                    # Exclude extension windows and popups
                                     if 'extension' not in title_lower and 'popup' not in title_lower:
                                         param.append((hwnd, window_title))
                     except:
                         pass
                     return True
                 
-                browser_windows = []
                 win32gui.EnumWindows(enum_windows_callback, browser_windows)
                 
                 if browser_windows:
-                    # Use the first browser window found (or could prioritize active one)
+                    # Use the first browser window found
                     browser_hwnd, window_title = browser_windows[0]
-                    self.log_message(f"Found browser window: {window_title}", "INFO")
                     
-                    # Try to bring window to foreground
+                    # Try to bring window to foreground (with error handling to prevent hangs)
                     try:
-                        win32gui.ShowWindow(browser_hwnd, win32con.SW_RESTORE)
-                        win32gui.SetForegroundWindow(browser_hwnd)
-                        self.log_message("Browser window activated", "INFO")
+                        placement = win32gui.GetWindowPlacement(browser_hwnd)
+                        if placement[1] == win32con.SW_SHOWMINIMIZED:
+                            win32gui.ShowWindow(browser_hwnd, win32con.SW_RESTORE)
+                            import time
+                            time.sleep(0.05)  # Reduced wait time
+                        
+                        # Try to set foreground window (may fail on some systems, that's OK)
+                        try:
+                            win32gui.SetForegroundWindow(browser_hwnd)
+                        except:
+                            # If SetForegroundWindow fails, try alternative method
+                            try:
+                                win32gui.ShowWindow(browser_hwnd, win32con.SW_RESTORE)
+                                win32gui.ShowWindow(browser_hwnd, win32con.SW_SHOW)
+                            except:
+                                pass
+                        
                         return browser_hwnd
                     except Exception as e:
-                        self.log_message(f"Could not activate window: {e}", "WARNING")
+                        # Return hwnd anyway - we can still try to detect
                         return browser_hwnd
             except Exception as e:
-                self.log_message(f"Error finding browser window: {e}", "WARNING")
+                pass  # Silently fail to prevent error spam
         return None
     
     def _show_detection_failed_dialog(self):
@@ -1887,10 +2473,10 @@ class TestCaseCapture:
         reasons_frame.pack(pady=(0, 15), padx=10, fill=tk.X)
         
         reasons = [
+            "• Browser window might be minimized or not visible",
             "• Browser not started with remote debugging (port 9222)",
-            "• Browser window is minimized or not active",
-            "• Multiple browser windows open",
-            "• URL not accessible from current method"
+            "• URL might not be visible in window title",
+            "• Multiple browser windows open (tool may detect wrong one)"
         ]
         for reason in reasons:
             ttk.Label(reasons_frame, text=reason, font=("Arial", 8)).pack(anchor=tk.W, pady=2)
@@ -2256,37 +2842,101 @@ class TestCaseCapture:
     
     def clear_url(self):
         """Clear the current URL and reset browser state"""
-        response = messagebox.askyesno("Clear URL", 
-                                      "Are you sure you want to clear the current URL?\n\n"
-                                      "This will reset:\n"
-                                      "- Current URL\n"
-                                      "- Module and Page detection\n"
-                                      "- Browser state\n\n"
-                                      "You can set a new URL using 'Detect URL from Browser' or 'Paste URL Manually'.")
-        if response:
-            # Clear URL
-            self.current_url = ""
-            self.current_module = ""
-            self.current_page = ""
-            self.current_tab = ""
-            
-            # Clear browser monitor
-            self.browser_monitor.current_url = ""
-            self.browser_monitor.current_module = ""
-            self.browser_monitor.current_page = ""
-            
-            # Clear manual URL entry
-            self.manual_url_var.set("")
-            
-            # Update UI
-            self.url_label.config(text="URL: Not detected")
-            self.session_info_label.config(text="Module: Auto-detected | Page: Auto-detected")
-            self.url_status_label.config(text="⚠ URL cleared. Use 'Detect URL from Browser' or 'Paste URL Manually' to set a new URL", 
-                                       foreground="orange")
-            
-            # Log the action
-            self.log_message("URL cleared successfully", "INFO")
-            self.log_message("You can now set a new URL using 'Detect URL from Browser' or 'Paste URL Manually' buttons", "INFO")
+        try:
+            response = messagebox.askyesno("Clear URL", 
+                                          "Are you sure you want to clear the current URL?\n\n"
+                                          "This will reset:\n"
+                                          "- Current URL\n"
+                                          "- Module and Page detection\n"
+                                          "- Browser state\n\n"
+                                          "You can set a new URL using 'Detect URL from Browser' or 'Paste URL Manually'.")
+            if response:
+                # FORCE RESET: Reset detection state (important: allows detection to work again after clearing)
+                self._detection_in_progress = False
+                self._url_detected_flag = False  # Reset detection flag
+                if hasattr(self, '_detection_start_time'):
+                    delattr(self, '_detection_start_time')
+                
+                # Hide loading indicator if showing
+                self._hide_loading_indicator()
+                
+                # Force reset detection button state (check actual state first)
+                if hasattr(self, 'detect_url_button'):
+                    try:
+                        current_state = self.detect_url_button.cget('state')
+                        current_text = self.detect_url_button.cget('text')
+                        if current_state == 'disabled' or 'Detecting' in current_text:
+                            self.log_message("🔧 Resetting stuck button state...", "INFO")
+                    except Exception as e:
+                        self.log_message(f"Error checking button state: {e}", "WARNING")
+                
+                self._reset_detection_button()
+                
+                # Log state reset for debugging
+                self.log_message(f"🔧 Detection state reset: _detection_in_progress={self._detection_in_progress}", "INFO")
+                
+                # Set flag to prevent browser monitor from re-setting URL immediately
+                import time
+                self._url_cleared_flag = True
+                self._url_clear_time = time.time()
+                
+                # Clear URL and related data
+                self.current_url = ""
+                self.current_module = ""
+                self.current_page = ""
+                self.current_tab = ""
+                
+                # Clear browser monitor state
+                try:
+                    self.browser_monitor.current_url = ""
+                    self.browser_monitor.current_module = ""
+                    self.browser_monitor.current_page = ""
+                except Exception as e:
+                    self.log_message(f"Error clearing browser monitor: {e}", "WARNING")
+                
+                # Reset the flag after 3 seconds (allows manual detection to work)
+                def reset_clear_flag():
+                    try:
+                        self._url_cleared_flag = False
+                        if hasattr(self, '_url_clear_time'):
+                            delattr(self, '_url_clear_time')
+                    except Exception:
+                        pass  # Silently handle errors
+                
+                try:
+                    if hasattr(self, 'root') and self.root:
+                        self.root.after(3000, reset_clear_flag)  # Reset flag after 3 seconds
+                except (tk.TclError, AttributeError) as e:
+                    self.log_message(f"Warning: Could not schedule flag reset: {e}", "WARNING")
+                
+                # Clear manual URL entry
+                try:
+                    if hasattr(self, 'manual_url_var'):
+                        self.manual_url_var.set("")
+                except Exception as e:
+                    self.log_message(f"Error clearing manual URL entry: {e}", "WARNING")
+                
+                # Update UI labels
+                try:
+                    if hasattr(self, 'url_label'):
+                        self.url_label.config(text="URL: Not detected")
+                    if hasattr(self, 'session_info_label'):
+                        self.session_info_label.config(text="Module: Auto-detected | Page: Auto-detected")
+                    if hasattr(self, 'url_status_label'):
+                        self.url_status_label.config(text="⚠ URL cleared. Use 'Detect URL from Browser' or 'Paste URL Manually' to set a new URL", 
+                                                   foreground="orange")
+                except Exception as e:
+                    self.log_message(f"Error updating UI labels: {e}", "WARNING")
+                
+                # Log the action
+                self.log_message("✅ URL cleared successfully", "SUCCESS")
+                self.log_message("✅ Ready for new detection. Click 'Detect URL from Browser' to start.", "INFO")
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            self.log_message(f"❌ Error clearing URL: {e}", "ERROR")
+            self.log_message(f"Error details: {error_details}", "ERROR")
+            messagebox.showerror("Error", f"An error occurred while clearing URL:\n{e}\n\nPlease try again.")
     
     def _show_browser_selection_dialog(self):
         """Show browser selection dialog"""
@@ -2629,12 +3279,12 @@ class TestCaseCapture:
                     base_url = self.browser_monitor.base_url or "Not set yet"
                     # Always show popup when URL is detected
                     self.root.after(0, lambda: messagebox.showinfo("URL Detected", 
-                                  f"URL successfully detected and updated!\n\n"
-                                  f"URL: {url}\n"
-                                  f"Base URL: {base_url}\n"
-                                  f"Module: {self.current_module}\n"
-                                  f"Page: {self.current_page}\n\n"
-                                  f"You can now start capturing test cases."))
+                              f"URL successfully detected and updated!\n\n"
+                              f"URL: {url}\n"
+                              f"Base URL: {base_url}\n"
+                              f"Module: {self.current_module}\n"
+                              f"Page: {self.current_page}\n\n"
+                              f"You can now start capturing test cases."))
                 except Exception as e:
                     self.log_message(f"❌ Error handling URL change: {e}", "ERROR")
                     self.root.after(0, lambda: messagebox.showerror("Error", 
@@ -3212,11 +3862,11 @@ class TestCaseCapture:
                 wb = Workbook()
                 wb.remove(wb.active)  # Remove default sheet
             
-            # Define headers
+            # Define headers - new structure as per requirements
             headers = [
-                "Test Case ID", "Test Case Name", "Description", "Preconditions",
-                "Test Steps", "Expected Result", "Actual Result", "Status",
-                "Priority", "Module", "Page", "Tab", "URL", "Created Date"
+                "TC_ID", "TC_Module", "Prerequisite", "Execution_Steps",
+                "Expected_Output", "Actual_Output", "Status", "Priority",
+                "URL", "Created Date"
             ]
             
             # Style for header
@@ -3239,37 +3889,44 @@ class TestCaseCapture:
                 if sheet_name in wb.sheetnames:
                     ws = wb[sheet_name]
                     # Clear existing data (keep header)
-                    ws.delete_rows(2, ws.max_row)
+                    if ws.max_row > 1:
+                        ws.delete_rows(2, ws.max_row)
                 else:
                     ws = wb.create_sheet(title=sheet_name)
             
-            # Write headers
-            for col_num, header in enumerate(headers, 1):
-                cell = ws.cell(row=1, column=col_num, value=header)
+                # Write headers for this sheet
+                for col_num, header in enumerate(headers, 1):
+                    cell = ws.cell(row=1, column=col_num, value=header)
                 cell.fill = header_fill
                 cell.font = header_font
                 cell.alignment = Alignment(horizontal="center", vertical="center")
                 cell.border = border
             
-            # Write test cases
-            for row_num, test_case in enumerate(test_cases, 2):
-                ws.cell(row=row_num, column=1, value=test_case.get("test_id", "")).border = border
-                ws.cell(row=row_num, column=2, value=test_case.get("test_name", "")).border = border
-                ws.cell(row=row_num, column=3, value=test_case.get("description", "")).border = border
-                ws.cell(row=row_num, column=4, value=test_case.get("preconditions", "")).border = border
-                ws.cell(row=row_num, column=5, value=test_case.get("test_steps", "")).border = border
-                ws.cell(row=row_num, column=6, value=test_case.get("expected_result", "")).border = border
-                ws.cell(row=row_num, column=7, value=test_case.get("actual_result", "")).border = border
-                ws.cell(row=row_num, column=8, value=test_case.get("status", "")).border = border
-                ws.cell(row=row_num, column=9, value=test_case.get("priority", "")).border = border
-                ws.cell(row=row_num, column=10, value=test_case.get("module", "")).border = border
-                ws.cell(row=row_num, column=11, value=test_case.get("page", "")).border = border
-                ws.cell(row=row_num, column=12, value=test_case.get("tab", "")).border = border
-                ws.cell(row=row_num, column=13, value=test_case.get("url", "")).border = border
-                ws.cell(row=row_num, column=14, value=test_case.get("created_date", "")).border = border
-                
-                # Color code status
-                status_cell = ws.cell(row=row_num, column=8)
+                # Write test cases for this module - new column structure
+                for row_num, test_case in enumerate(test_cases, 2):
+                    # Column 1: TC_ID
+                    ws.cell(row=row_num, column=1, value=test_case.get("test_id", "")).border = border
+                    # Column 2: TC_Module
+                    ws.cell(row=row_num, column=2, value=test_case.get("module", "")).border = border
+                    # Column 3: Prerequisite
+                    ws.cell(row=row_num, column=3, value=test_case.get("preconditions", "")).border = border
+                    # Column 4: Execution_Steps
+                    ws.cell(row=row_num, column=4, value=test_case.get("test_steps", "")).border = border
+                    # Column 5: Expected_Output
+                    ws.cell(row=row_num, column=5, value=test_case.get("expected_result", "")).border = border
+                    # Column 6: Actual_Output
+                    ws.cell(row=row_num, column=6, value=test_case.get("actual_result", "")).border = border
+                    # Column 7: Status
+                    ws.cell(row=row_num, column=7, value=test_case.get("status", "")).border = border
+                    # Column 8: Priority
+                    ws.cell(row=row_num, column=8, value=test_case.get("priority", "")).border = border
+                    # Column 9: URL
+                    ws.cell(row=row_num, column=9, value=test_case.get("url", "")).border = border
+                    # Column 10: Created Date
+                    ws.cell(row=row_num, column=10, value=test_case.get("created_date", "")).border = border
+                    
+                    # Color code status (now in column 7)
+                    status_cell = ws.cell(row=row_num, column=7)
                 status = test_case.get("status", "")
                 if status == "Pass":
                     status_cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
@@ -3278,21 +3935,21 @@ class TestCaseCapture:
                 elif status == "Blocked":
                     status_cell.fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
             
-            # Auto-adjust column widths
-            for col_num, header in enumerate(headers, 1):
-                max_length = len(header)
-                for row_num in range(2, len(test_cases) + 2):
-                    cell_value = ws.cell(row=row_num, column=col_num).value
-                    if cell_value:
-                        max_length = max(max_length, len(str(cell_value)))
-                ws.column_dimensions[get_column_letter(col_num)].width = min(max_length + 2, 50)
+                # Auto-adjust column widths for this sheet
+                for col_num, header in enumerate(headers, 1):
+                    max_length = len(header)
+                    for row_num in range(2, len(test_cases) + 2):
+                        cell_value = ws.cell(row=row_num, column=col_num).value
+                        if cell_value:
+                            max_length = max(max_length, len(str(cell_value)))
+                    ws.column_dimensions[get_column_letter(col_num)].width = min(max_length + 2, 50)
             
-            # Enable text wrapping for description columns
-            for row_num in range(2, len(test_cases) + 2):
-                for col_num in [3, 4, 5, 6, 7]:  # Description, Preconditions, Test Steps, Expected, Actual
-                    ws.cell(row=row_num, column=col_num).alignment = Alignment(
-                        wrap_text=True, vertical="top"
-                    )
+                # Enable text wrapping for columns with long text
+                for row_num in range(2, len(test_cases) + 2):
+                    for col_num in [3, 4, 5, 6]:  # Prerequisite, Execution_Steps, Expected_Output, Actual_Output
+                        ws.cell(row=row_num, column=col_num).alignment = Alignment(
+                            wrap_text=True, vertical="top"
+                        )
             
             # Freeze header row
             ws.freeze_panes = "A2"
